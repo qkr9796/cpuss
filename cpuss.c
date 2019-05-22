@@ -4,13 +4,14 @@
 #include <string.h>
 #include <fcntl.h>
 
-#define PROCESS_MAX 200
-#define CPU_BIRST_MAX 20
+#define PROCESS_MAX 30
+#define CPU_BIRST_MAX 50
 #define IO_BIRST_LENGTH_MAX 10
-#define ARRIVAL_TIME_MAX 0
-#define PRIORITY_MAX 100
-#define IO_INTERRUPT_MAX 0
+#define ARRIVAL_TIME_MAX 30
+#define PRIORITY_MAX 50
+#define IO_INTERRUPT_MAX 3
 #define RR_TIMESLICE 5
+#define CFS_TIMESLICE 5
 
 #define FCFS 1
 #define NPSJF 2
@@ -18,6 +19,7 @@
 #define RR 4
 #define PSJF 5
 #define PPRIO 6
+#define CFS 7
 
 typedef int bool;
 #define true 1
@@ -37,6 +39,8 @@ typedef struct eval_cpu{
 }EVAL_CPU;
 
 typedef struct process{
+
+	/*initialized values*/
 	int pid;
 	int cpu_t;  //cpu birst time
 	int io_t;  // i/o birst time
@@ -44,16 +48,19 @@ typedef struct process{
 	int priority;  //priority
 	int io_count;  //number of i/o interrupts
 
+	/*variables*/
 	int io_interrupted;  //internal value for calculating number of i/o intterupts
 
 	int cpu_used;  //internal value for calculating cpu used
 	int io_waited;  //internal value for calculate waiting time
-	int t_wait;
-	int tur_t;
+	int t_wait; //total wait time
+	int tur_t; //total turnaround time
 
-	int rr_ts_used;
+	int rr_ts_used; //roud-robin timeslice used
 
-	int last_executed;
+	float vruntime;
+
+	int last_executed; //internal value for calculating waiting time
 
 	int* io_loc;  // location of i/o interrupt in cpu_t
 	int* io_length; //length of each i/o intteruption
@@ -83,6 +90,7 @@ typedef struct cpu{
 
 
 FILE* fd ;
+FILE* plog;
 
 
 static int _search(NODE** pPre, NODE** pLoc, PROCESS process, int (*compare)(PROCESS p1, PROCESS p2)){
@@ -147,6 +155,28 @@ static void printNode(NODE* headPtr){
 		printf("pid%d->", headPtr->process->pid);
 		headPtr++;
 	}
+}
+
+void setVruntime(PROCESS* process){
+	process->vruntime = process->cpu_used / process->priority;
+}
+
+int compare_shorter_vruntime(PROCESS p1, PROCESS p2){
+ 	if(p1.vruntime > p2.vruntime)
+		return -1;
+	else if(p1.vruntime < p2.vruntime)
+		return 1;
+	else if(p1.vruntime == p2.vruntime)
+		return 0;
+}
+
+static int enque_vruntime(NODE** headPtr, NODE** rearPtr,void* np, PROCESS* process, int* count){
+	NODE* pPre = NULL;
+	NODE* pLoc = *headPtr;
+	setVruntime(process);
+	_search(&pPre, &pLoc, *process, compare_shorter_vruntime);
+	_insert(headPtr, rearPtr, pPre, process, count);
+	return 1;
 }
 
 int compare_shorter_job(PROCESS p1, PROCESS p2){
@@ -255,7 +285,7 @@ PROCESS create_Process(){
 	ret.pid = pid_ref++;
 	ret.cpu_t = 1 + rand() % CPU_BIRST_MAX;
 	ret.arrival_t = rand() % (ARRIVAL_TIME_MAX+1);
-	ret.priority = rand() % (PRIORITY_MAX+1);
+	ret.priority = 1 + rand() % (PRIORITY_MAX);
 
 	ret.cpu_used = 0;
 	ret.io_interrupted = 0;
@@ -265,11 +295,12 @@ PROCESS create_Process(){
 
 	ret.rr_ts_used = 0;
 
+	ret.vruntime = 0;
+
 	ret.last_executed = ret.arrival_t;
 
 	ret.io_t = 0;
 
-	//todo::::::::::::::::: make random io locations
 	if(ret.cpu_t == 1)
 		ret.io_count = 0;
 	else
@@ -298,8 +329,20 @@ PROCESS create_Process(){
 
 	fprintf(fd, "created PID : %d, arrival_t : %d, cpu_t : %d, priority : %d\n", ret.pid, ret.arrival_t, ret.cpu_t,ret.priority);
 
+	fprintf(plog, "===process PID: %d===\n",ret.pid);
+	fprintf(plog, "arrival time: %d, cpu time: %d, priority: %d\n",ret.arrival_t, ret.cpu_t,ret.priority);
+	fprintf(plog, "times of I/O: %d\n", ret.io_count);
+	for(i = 0;i<ret.io_count;i++)
+		fprintf(plog, "location: %d, length: %d\n\n",ret.io_loc[i],ret.io_length[i]);
+	
+
 	return ret;
 }//create_Process()
+
+void remove_Process(PROCESS* p){
+	free(p->io_loc);
+	free(p->io_length);
+}
 
 void resetProcess(PROCESS* p){
 	p->io_interrupted = 0;
@@ -311,6 +354,16 @@ void resetProcess(PROCESS* p){
 
 	p->last_executed = p->arrival_t;
 }
+
+void printProcessData(FILE* output, PROCESS* p){
+	fprintf(plog, "===process PID: %d===\n",p->pid);
+	fprintf(plog, "arrival time: %d, cpu requirement time: %d priority: %d\n",p->arrival_t, p->cpu_t,p->priority);
+	fprintf(plog, "times of I/O: %d\n", p->io_count);
+
+	fprintf(plog, "process waiting time: %d\n", p->t_wait);
+	fprintf(plog, "process turnaround time: %d\n\n", p->tur_t);
+}
+	
 
 
 
@@ -1127,12 +1180,144 @@ CPU schedule(int val, PROCESS* arr){   //val, for further input variation, arr :
 
 			}//end case P-priority
 
+		case CFS:
+			{
+
+				/*CFS like scheduling
+				 */
+
+				int i = 0;
+				int time = 0;
+
+				while(queue.ready_count != 0 || queue.running != NULL || arr[i].pid != -1 || queue.waiting_count != 0){
+
+					fprintf(fd, "schedule running, next job : arr[%d]  time : %d\n ready: %d waiting: %d\n",i, time, queue.ready_count, queue.waiting_count);
+
+					if(queue.running != NULL && queue.running->cpu_used == queue.running->io_loc[queue.running->io_interrupted]){
+
+						fprintf(fd, "running to waiting\n");
+
+						queue.running->io_waited = queue.running->io_length[queue.running->io_interrupted];
+						queue.running->io_interrupted += 1;
+						queue.running->rr_ts_used = 0;
+						_insert(&queue.waiting_head, &queue.waiting_rear,NULL,queue.running,&queue.waiting_count);
+						queue.running = NULL;
+					} // running to waiting(I/O interrupt)
+
+					if(queue.running != NULL && queue.running->rr_ts_used == CFS_TIMESLICE){
+						queue.running->rr_ts_used = 0;
+						enque_vruntime(&queue.ready_head, &queue.ready_rear,NULL, queue.running, &queue.ready_count);
+						queue.running = NULL;
+					}//ts expired
+
+					if(queue.waiting_count != 0){
+
+						fprintf(fd, "check waiting list\n");
+
+						NODE* pLoc = queue.waiting_head;
+						while(pLoc!=NULL && pLoc->rlink != NULL){
+							if(pLoc->process->io_waited == 0 && pLoc->process->cpu_used == pLoc->process->io_loc[pLoc->process->io_interrupted]){
+								pLoc->process->io_waited = pLoc->process->io_length[pLoc->process->io_interrupted];
+								pLoc->process->io_waited -= 1;
+								pLoc->process->io_interrupted += 1;
+								pLoc- pLoc->rlink;
+							} else if(pLoc->process->io_waited == 0){
+
+								fprintf(fd, "waiting to ready occured\n");
+
+								pLoc->process->last_executed = time;
+								enque_vruntime(&queue.ready_head, &queue.ready_rear,NULL,pLoc->process,&queue.ready_count);
+								pLoc = pLoc->rlink;
+								_delete(&queue.waiting_head, &queue.waiting_rear,pLoc->llink->llink,pLoc->llink, &queue.waiting_count);
+							} else { 
+								pLoc->process->io_waited -= 1;
+								pLoc = pLoc->rlink;
+							}
+
+						}// while
+
+						if(pLoc != NULL){
+							if(pLoc->process->io_waited == 0 && pLoc->process->cpu_used == pLoc->process->io_loc[pLoc->process->io_interrupted]) {
+								pLoc->process->io_waited = pLoc->process->io_length[pLoc->process->io_interrupted];
+								pLoc->process->io_waited -= 1;
+								pLoc->process->io_interrupted += 1;
+							} else if (pLoc->process->io_waited == 0) {
+
+								fprintf(fd, "waiting to ready occured\n");
+
+								pLoc->process->last_executed = time;
+								enque_vruntime(&queue.ready_head, &queue.ready_rear,NULL,pLoc->process,&queue.ready_count);
+								_delete(&queue.waiting_head, &queue.waiting_rear,pLoc->llink,pLoc, &queue.waiting_count);
+							} else {
+								pLoc->process->io_waited -= 1;
+							}
+						}
+					}//waiting to ready
+
+					if(arr[i].pid != -1 && time == arr[i].arrival_t){
+
+						while(arr[i].pid != -1 && time == arr[i].arrival_t){
+
+							fprintf(fd, "arr to ready \n");
+
+							enque_vruntime(&queue.ready_head, &queue.ready_rear, NULL, &arr[i], &queue.ready_count);
+							i++;
+						}
+					}//arr to ready queue
+
+					if(queue.running == NULL && queue.ready_rear != NULL){
+
+						fprintf(fd, "ready to running\n");
+
+						queue.running = queue.ready_rear->process;
+						queue.running->t_wait += (time - queue.running->last_executed);
+						queue.running->rr_ts_used = 0;
+						_delete(&queue.ready_head, &queue.ready_rear, queue.ready_rear->llink, queue.ready_rear, &queue.ready_count);
+					}//ready queue to running
+
+
+					if(queue.running != NULL){
+
+						fprintf(fd, "--running-- pid : %d cpu_t : %d cpu_used : %d\n",queue.running->pid,queue.running->cpu_t, queue.running->cpu_used);
+
+						queue.running->cpu_used += 1;
+						queue.running->rr_ts_used += 1;
+
+						//	printf(" after cpu_used increase\n");
+
+						queue.running->last_executed = time;
+
+						//	printf("after recording last_executed\n");
+					}
+
+					_insert(&ret.cpu_head, &ret.cpu_rear, NULL, queue.running, &(ret.length));
+
+					time++;
+
+					//printf("after cpu record\n");
+
+					if(queue.running !=NULL && queue.running->cpu_used == queue.running->cpu_t ){
+
+						fprintf(fd, "terminated\n");
+
+						queue.running->tur_t = (time - queue.running->arrival_t);
+						queue.running->rr_ts_used = 0;
+						queue.running = NULL;
+					}
+
+					//printf("after checking termination\n");
+
+				}//CFS
+
+				return ret;
+			}//end case CFS
+
 	}//switch
 
 }//schedule
 
 
-EVAL_CPU evaluate(CPU c, PROCESS* arr){
+EVAL_CPU evaluate(CPU c, PROCESS* arr, FILE* output){
 
 	EVAL_CPU ret;
 
@@ -1146,20 +1331,17 @@ EVAL_CPU evaluate(CPU c, PROCESS* arr){
 
 	fprintf(fd, "cpu record length : %d\n", c.length);
 
-
 	NODE* temp = c.cpu_rear;
-	if(temp->process == NULL)
-		fprintf(fd, "c.cpu_rear null\n");
 
 	while(temp != c.cpu_head){
 		ret.total_runtime += 1;
 		if(temp->process == NULL){
 			ret.cpu_idle_time += 1;
-			printf("0.");
+			fprintf(output,"0.");
 		}
 		else {
 			ret.cpu_util_time += 1;
-			printf("%d.",temp->process->pid);
+			fprintf(output,"%d.",temp->process->pid);
 		}
 		temp = temp->llink;
 	}
@@ -1168,13 +1350,13 @@ EVAL_CPU evaluate(CPU c, PROCESS* arr){
 
 	if(temp->process == NULL){
 		ret.cpu_idle_time += 1;
-		printf("0.");
+		fprintf(output,"0.");
 	} else {
 		ret.cpu_util_time += 1;
-		printf("%d.",temp->process->pid);
+		fprintf(output,"%d.",temp->process->pid);
 	}
 	ret.total_runtime += 1;
-	printf("\n");
+	fprintf(output,"\n");
 
 
 	int i = 0;
@@ -1192,16 +1374,16 @@ EVAL_CPU evaluate(CPU c, PROCESS* arr){
 	return ret;
 }
 
-void printData(EVAL_CPU ec){
+void printData(EVAL_CPU ec, FILE* output){
 
 
-	printf("total cpu runtime : %d\n", ec.total_runtime);
-	printf("cpu idle time : %d\n", ec.cpu_idle_time);
-	printf("cpu utilization time : %d\n", ec.cpu_util_time);
-	printf("total process waiting time : %d\n", ec.total_wait_time);
-	printf("average process waiting time : %f\n", ec.avg_wait_time);
-	printf("total turnaround time : %d\n", ec.total_tur_time);
-	printf("average turnaround time : %f\n", ec.avg_tur_time);
+	fprintf(output, "total cpu runtime : %d\n", ec.total_runtime);
+	fprintf(output, "cpu idle time : %d\n", ec.cpu_idle_time);
+	fprintf(output, "cpu utilization time : %d\n", ec.cpu_util_time);
+	fprintf(output, "total process waiting time : %d\n", ec.total_wait_time);
+	fprintf(output, "average process waiting time : %f\n", ec.avg_wait_time);
+	fprintf(output, "total turnaround time : %d\n", ec.total_tur_time);
+	fprintf(output, "average turnaround time : %f\n", ec.avg_tur_time);
 
 }
 
@@ -1209,14 +1391,19 @@ void printData(EVAL_CPU ec){
 int main(){
 
 	fd = fopen("./cpuss.log","w+");
-	printf("log file is located on ./cpuss.log\n");
+	plog = fopen("./process.data","w+");
+	FILE* summary = fopen("./cpuss.summary","w+");
 
-	PROCESS arr[PROCESS_MAX];
+	printf("log file is located on ./cpuss.log\n");
+	printf("process data is located on ./process.data\n");
+	printf("summary of data is also loacated on ./cpuss.summary\n");
+
+	PROCESS arr[PROCESS_MAX+1];
 
 	srand(time(NULL));
 
 	int i;
-	for(i=0;i<5;i++){
+	for(i=0;i<PROCESS_MAX;i++){
 		arr[i] = create_Process();
 	}
 	arr[i].pid = -1;;
@@ -1232,13 +1419,22 @@ int main(){
 	
 	printf("evaluating CPU usage\n");
 	printf("gantt chart : \n");
-	ec = evaluate(c, arr);
-	printData(ec);
+	ec = evaluate(c, arr, stdout);
+	printData(ec, stdout);
+
+	fprintf(summary, "FCFS\n\n");
+	ec = evaluate(c, arr, summary);
+	printData(ec, summary);
+
+
+	fprintf(plog,"process data aftere execution of FCFS\n\n");
+	for(i=0;i<PROCESS_MAX;i++)
+		printProcessData(plog, &arr[i]);
 
 	printf("===========resetting process data===================\n");
 	printf("\n");
 
-	for(i=0;i<5;i++)
+	for(i=0;i<PROCESS_MAX;i++)
 		resetProcess(&arr[i]);
 	printf("process initialized\n");
 
@@ -1247,13 +1443,21 @@ int main(){
 	
 	printf("evaluating CPU usage\n");
 	printf("gantt chart : \n");
-	ec = evaluate(c, arr);
-	printData(ec);
+	ec = evaluate(c, arr, stdout);
+	printData(ec, stdout);
+
+	fprintf(summary, "NP-SJF\n\n");
+	ec = evaluate(c, arr, summary);
+	printData(ec, summary);
+
+	fprintf(plog,"process data aftere execution of NPSJF\n\n");
+	for(i=0;i<PROCESS_MAX;i++)
+		printProcessData(plog, &arr[i]);
 
 	printf("===========resetting process data===================\n");
 	printf("\n");
 
-	for(i=0;i<5;i++)
+	for(i=0;i<PROCESS_MAX;i++)
 		resetProcess(&arr[i]);
 	printf("process initialized\n");
 
@@ -1262,13 +1466,21 @@ int main(){
 	
 	printf("evaluating CPU usage\n");
 	printf("gantt chart : \n");
-	ec = evaluate(c, arr);
-	printData(ec);
+	ec = evaluate(c, arr, stdout);
+	printData(ec, stdout);
+
+	fprintf(summary, "NP-priority\n\n");
+	ec = evaluate(c, arr, summary);
+	printData(ec, summary);
+
+	fprintf(plog,"process data aftere execution of NP-priority\n\n");
+	for(i=0;i<PROCESS_MAX;i++)
+		printProcessData(plog, &arr[i]);
 
 	printf("===========resetting process data===================\n");
 	printf("\n");
 
-	for(i=0;i<5;i++)
+	for(i=0;i<PROCESS_MAX;i++)
 		resetProcess(&arr[i]);
 	printf("process initialized\n");
 
@@ -1277,13 +1489,21 @@ int main(){
 	
 	printf("evaluating CPU usage\n");
 	printf("gantt chart : \n");
-	ec = evaluate(c, arr);
-	printData(ec);
+	ec = evaluate(c, arr, stdout);
+	printData(ec, stdout);
+
+	fprintf(summary, "RR\n\n");
+	ec = evaluate(c, arr, summary);
+	printData(ec, summary);
+
+	fprintf(plog,"process data aftere execution of RR\n\n");
+	for(i=0;i<PROCESS_MAX;i++)
+		printProcessData(plog, &arr[i]);
 
 	printf("===========resetting process data===================\n");
 	printf("\n");
 
-	for(i=0;i<5;i++)
+	for(i=0;i<PROCESS_MAX;i++)
 		resetProcess(&arr[i]);
 	printf("process initialized\n");
 
@@ -1292,13 +1512,21 @@ int main(){
 	
 	printf("evaluating CPU usage\n");
 	printf("gantt chart : \n");
-	ec = evaluate(c, arr);
-	printData(ec);
+	ec = evaluate(c, arr, stdout);
+	printData(ec, stdout);
+
+	fprintf(summary, "Preemptive SJF\n\n");
+	ec = evaluate(c, arr, summary);
+	printData(ec, summary);
+
+	fprintf(plog,"process data aftere execution of Preemptive SJF\n\n");
+	for(i=0;i<PROCESS_MAX;i++)
+		printProcessData(plog, &arr[i]);
 
 	printf("===========resetting process data===================\n");
 	printf("\n");
 
-	for(i=0;i<5;i++)
+	for(i=0;i<PROCESS_MAX;i++)
 		resetProcess(&arr[i]);
 	printf("process initialized\n");
 
@@ -1307,10 +1535,45 @@ int main(){
 	
 	printf("evaluating CPU usage\n");
 	printf("gantt chart : \n");
-	ec = evaluate(c, arr);
-	printData(ec);
+	ec = evaluate(c, arr, stdout);
+	printData(ec, stdout);
+
+	fprintf(summary, "Preemptive Priority\n\n");
+	ec = evaluate(c, arr, summary);
+	printData(ec, summary);
+
+	fprintf(plog,"process data aftere execution of Preemptive Priority\n\n");
+	for(i=0;i<PROCESS_MAX;i++)
+		printProcessData(plog, &arr[i]);
+
+	printf("===========resetting process data===================\n");
+	printf("\n");
+
+	for(i=0;i<PROCESS_MAX;i++)
+		resetProcess(&arr[i]);
+	printf("process initialized\n");
+
+	printf("scheduling array of processes with CFS-like scheduling, log will be recorded on ./cpuss.log\n");
+	c = schedule(CFS, arr);
+	
+	printf("evaluating CPU usage\n");
+	printf("gantt chart : \n");
+	ec = evaluate(c, arr, stdout);
+	printData(ec, stdout);
+
+	fprintf(summary, "CFS\n\n");
+	ec = evaluate(c, arr, summary);
+	printData(ec, summary);
+
+	fprintf(plog,"process data aftere execution of CFS\n\n");
+	for(i=0;i<PROCESS_MAX;i++)
+		printProcessData(plog, &arr[i]);
 
 	fclose(fd);
+	fclose(plog);
+
+	for(i=0;i<PROCESS_MAX;i++)
+		remove_Process(&arr[i]);
 }
 
 
