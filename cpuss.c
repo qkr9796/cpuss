@@ -4,14 +4,16 @@
 #include <string.h>
 #include <fcntl.h>
 
-#define PROCESS_MAX 30
-#define CPU_BIRST_MAX 50
+#define PROCESS_MAX 10
+#define CPU_BIRST_MAX 30
 #define IO_BIRST_LENGTH_MAX 10
-#define ARRIVAL_TIME_MAX 30
-#define PRIORITY_MAX 50
-#define IO_INTERRUPT_MAX 3
+#define ARRIVAL_TIME_MAX 0
+#define PRIORITY_MAX 2
+#define IO_INTERRUPT_MAX 0
 #define RR_TIMESLICE 5
 #define CFS_TIMESLICE 5
+
+#define CPU_CORES 4
 
 #define FCFS 1
 #define NPSJF 2
@@ -34,8 +36,8 @@ typedef struct eval_cpu{
 	float avg_wait_time;
 	int total_tur_time;
 	float avg_tur_time;
-	int cpu_util_time;
-	int cpu_idle_time;
+	int cpu_util_time[CPU_CORES];
+	int cpu_idle_time[CPU_CORES];
 }EVAL_CPU;
 
 typedef struct process{
@@ -79,7 +81,7 @@ typedef struct queue{
 	NODE* ready_rear;
 	NODE* waiting_head;
 	NODE* waiting_rear;
-	PROCESS* running;
+	PROCESS* running[CPU_CORES];
 }QUEUE;
 
 typedef struct cpu{
@@ -162,7 +164,7 @@ void setVruntime(PROCESS* process){
 }
 
 int compare_shorter_vruntime(PROCESS p1, PROCESS p2){
- 	if(p1.vruntime > p2.vruntime)
+	if(p1.vruntime > p2.vruntime)
 		return -1;
 	else if(p1.vruntime < p2.vruntime)
 		return 1;
@@ -334,7 +336,7 @@ PROCESS create_Process(){
 	fprintf(plog, "times of I/O: %d\n", ret.io_count);
 	for(i = 0;i<ret.io_count;i++)
 		fprintf(plog, "location: %d, length: %d\n\n",ret.io_loc[i],ret.io_length[i]);
-	
+
 
 	return ret;
 }//create_Process()
@@ -363,9 +365,6 @@ void printProcessData(FILE* output, PROCESS* p){
 	fprintf(plog, "process waiting time: %d\n", p->t_wait);
 	fprintf(plog, "process turnaround time: %d\n\n", p->tur_t);
 }
-	
-
-
 
 QUEUE configure(){
 
@@ -376,20 +375,39 @@ QUEUE configure(){
 	ret.waiting_rear = NULL;
 	ret.ready_count = 0;
 	ret.waiting_count = 0;
-	ret.running = NULL;
+
+	ret.running[CPU_CORES];
+
+	int i;
+	for(i=0;i<CPU_CORES;i++)
+		ret.running[i] = NULL;
 
 	return ret;
 }
 
-CPU schedule(int val, PROCESS* arr){   //val, for further input variation, arr : array of processes 
+int scheduling_done(int ready_count, PROCESS** running, int pid, int waiting_count){
+	if(ready_count > 0 || pid != -1 || waiting_count > 0 )
+		return 1;
+	else {
+		for(int i=0;i<CPU_CORES;i++){
+			if(running[i] != NULL)
+				return 1;
+		}
+		return 0;
+	}
+}
+
+CPU* schedule(int val, PROCESS* arr){   //val, for further input variation, arr : array of processes 
 
 	fprintf(fd, "\n\n start scheduling by val: %d\n\n", val);
 
 	//initializing ret;
-	CPU ret;
-	ret.cpu_head = NULL;
-	ret.cpu_rear = NULL;
-	ret.length = 0;
+	CPU* ret = (CPU*)malloc(sizeof(CPU) * CPU_CORES);
+	for(int i =0;i<CPU_CORES;i++){
+		ret[i].cpu_head = NULL;
+		ret[i].cpu_rear = NULL;
+		ret[i].length = 0;
+	}
 
 	int count = 0;
 	while(arr[count].pid != -1)
@@ -405,12 +423,12 @@ CPU schedule(int val, PROCESS* arr){   //val, for further input variation, arr :
 		fprintf(fd, "pid : %d  arrival time : %d \n",arr[temp].pid, arr[temp].arrival_t);
 		temp++;
 	}
-	////////////////////////
+	//////////////////////////////////////////////////
 
+	int j = 0;
 
 	QUEUE queue = configure(); 
 
-	fprintf(fd, "end queue configure\n"); //for check
 
 
 	switch(val){
@@ -423,19 +441,21 @@ CPU schedule(int val, PROCESS* arr){   //val, for further input variation, arr :
 				int i = 0;
 				int time = 0;
 
-				while(queue.ready_count != 0 || queue.running != NULL || arr[i].pid != -1 || queue.waiting_count != 0){
+				while(scheduling_done(queue.ready_count, queue.running, arr[i].pid, queue.waiting_count)){
 
 					fprintf(fd, "schedule running, next job : arr[%d]  time : %d\n ready: %d waiting: %d\n",i, time, queue.ready_count, queue.waiting_count);
 
-					if(queue.running != NULL && queue.running->cpu_used == queue.running->io_loc[queue.running->io_interrupted]){
+					for(j=0;j<CPU_CORES;j++){
+						if(queue.running[j] != NULL && queue.running[j]->cpu_used == queue.running[j]->io_loc[queue.running[j]->io_interrupted]){
 
-						fprintf(fd, "running to waiting\n");
+							fprintf(fd, "running to waiting\n");
 
-						queue.running->io_waited = queue.running->io_length[queue.running->io_interrupted];
-						queue.running->io_interrupted += 1;
-						_insert(&queue.waiting_head, &queue.waiting_rear,NULL,queue.running,&queue.waiting_count);
-						queue.running = NULL;
-					} // running to waiting(I/O interrupt)
+							queue.running[j]->io_waited = queue.running[j]->io_length[queue.running[j]->io_interrupted];
+							queue.running[j]->io_interrupted += 1;
+							_insert(&queue.waiting_head, &queue.waiting_rear,NULL,queue.running[j],&queue.waiting_count);
+							queue.running[j] = NULL;
+						} // running to waiting(I/O interrupt)
+					}
 
 					if(queue.waiting_count != 0){
 
@@ -492,41 +512,50 @@ CPU schedule(int val, PROCESS* arr){   //val, for further input variation, arr :
 						}
 					}//arr to ready queue
 
-					if(queue.running == NULL && queue.ready_rear != NULL){
+					for(j=0;j<CPU_CORES;j++){
 
-						fprintf(fd, "ready to running\n");
+						if(queue.running[j] == NULL && queue.ready_rear != NULL){
 
-						queue.running = queue.ready_rear->process;
-						queue.running->t_wait += (time - queue.running->last_executed);
-						_delete(&queue.ready_head, &queue.ready_rear, queue.ready_rear->llink, queue.ready_rear, &queue.ready_count);
-					}//ready queue to running
+							fprintf(fd, "ready to running\n");
 
-
-					if(queue.running != NULL){
-
-						fprintf(fd, "--running-- pid : %d cpu_t : %d cpu_used : %d\n",queue.running->pid,queue.running->cpu_t, queue.running->cpu_used);
-
-						queue.running->cpu_used += 1;
-
-						//	printf(" after cpu_used increase\n");
-
-						queue.running->last_executed = time;
-
-						//	printf("after recording last_executed\n");
+							queue.running[j] = queue.ready_rear->process;
+							queue.running[j]->t_wait += (time - queue.running[j]->last_executed);
+							_delete(&queue.ready_head, &queue.ready_rear, queue.ready_rear->llink, queue.ready_rear, &queue.ready_count);
+						}//ready queue to running
 					}
 
-					_insert(&ret.cpu_head, &ret.cpu_rear, NULL, queue.running, &(ret.length));
+
+					for(j=0;j<CPU_CORES;j++){
+						if(queue.running[j] != NULL){
+
+							fprintf(fd, "--running-- pid : %d cpu_t : %d cpu_used : %d\n",queue.running[j]->pid,queue.running[j]->cpu_t, queue.running[j]->cpu_used);
+
+							queue.running[j]->cpu_used += 1;
+
+							//	printf(" after cpu_used increase\n");
+
+							queue.running[j]->last_executed = time;
+
+							//	printf("after recording last_executed\n");
+						}
+					}
+
+					for(j=0;j<CPU_CORES;j++){
+						_insert(&ret[j].cpu_head, &ret[j].cpu_rear, NULL, queue.running[j], &(ret[j].length));
+					}
 
 					time++;
 
 					//printf("after cpu record\n");
 
-					if(queue.running !=NULL && queue.running->cpu_used == queue.running->cpu_t ){
+					for(j=0;j<CPU_CORES;j++){
+						if(queue.running[j] !=NULL && queue.running[j]->cpu_used == queue.running[j]->cpu_t ){
 
-						fprintf(fd, "terminated\n");
+							fprintf(fd, "terminated\n");
 
-						queue.running->tur_t = (time - queue.running->arrival_t);
-						queue.running = NULL;
+							queue.running[j]->tur_t = (time - queue.running[j]->arrival_t);
+							queue.running[j] = NULL;
+						}
 					}
 
 					//printf("after checking termination\n");
@@ -535,6 +564,7 @@ CPU schedule(int val, PROCESS* arr){   //val, for further input variation, arr :
 
 				return ret;
 			}//end case FCFS
+
 		case NPSJF:
 			{
 
@@ -544,19 +574,21 @@ CPU schedule(int val, PROCESS* arr){   //val, for further input variation, arr :
 				int i = 0;
 				int time = 0;
 
-				while(queue.ready_count != 0 || queue.running != NULL || arr[i].pid != -1 || queue.waiting_count != 0){
+				while(scheduling_done(queue.ready_count, queue.running, arr[i].pid, queue.waiting_count)){
 
 					fprintf(fd, "schedule running, next job : arr[%d]  time : %d\n ready: %d waiting: %d\n",i, time, queue.ready_count, queue.waiting_count);
 
-					if(queue.running != NULL && queue.running->cpu_used == queue.running->io_loc[queue.running->io_interrupted]){
+					for(j = 0;j<CPU_CORES;j++){
+						if(queue.running[j] != NULL && queue.running[j]->cpu_used == queue.running[j]->io_loc[queue.running[j]->io_interrupted]){
 
-						fprintf(fd, "running to waiting\n");
+							fprintf(fd, "running to waiting\n");
 
-						queue.running->io_waited = queue.running->io_length[queue.running->io_interrupted];
-						queue.running->io_interrupted += 1;
-						_insert(&queue.waiting_head, &queue.waiting_rear,NULL,queue.running,&queue.waiting_count);
-						queue.running = NULL;
-					} // running to waiting(I/O interrupt)
+							queue.running[j]->io_waited = queue.running[j]->io_length[queue.running[j]->io_interrupted];
+							queue.running[j]->io_interrupted += 1;
+							_insert(&queue.waiting_head, &queue.waiting_rear,NULL,queue.running[j],&queue.waiting_count);
+							queue.running[j] = NULL;
+						} // running to waiting(I/O interrupt)
+					}
 
 					if(queue.waiting_count != 0){
 
@@ -613,42 +645,50 @@ CPU schedule(int val, PROCESS* arr){   //val, for further input variation, arr :
 						}
 					}//arr to ready queue
 
-					if(queue.running == NULL && queue.ready_rear != NULL){
+					for(j = 0;j<CPU_CORES;j++){
+						if(queue.running[j] == NULL && queue.ready_rear != NULL){
 
-						fprintf(fd, "ready to running\n");
+							fprintf(fd, "ready to running\n");
 
-						queue.running = queue.ready_rear->process;
-						queue.running->t_wait += (time - queue.running->last_executed);
-						_delete(&queue.ready_head, &queue.ready_rear, queue.ready_rear->llink, queue.ready_rear, &queue.ready_count);
-					}//ready queue to running
-
-
-					if(queue.running != NULL){
-
-						fprintf(fd, "--running-- pid : %d cpu_t : %d cpu_used : %d\n",queue.running->pid,queue.running->cpu_t, queue.running->cpu_used);
-
-						queue.running->cpu_used += 1;
-
-						//	printf(" after cpu_used increase\n");
-
-						queue.running->last_executed = time;
-
-						//	printf("after recording last_executed\n");
+							queue.running[j] = queue.ready_rear->process;
+							queue.running[j]->t_wait += (time - queue.running[j]->last_executed);
+							_delete(&queue.ready_head, &queue.ready_rear, queue.ready_rear->llink, queue.ready_rear, &queue.ready_count);
+						}//ready queue to running
 					}
 
-					_insert(&ret.cpu_head, &ret.cpu_rear, NULL, queue.running, &(ret.length));
+
+					for(j = 0;j<CPU_CORES;j++){
+						if(queue.running[j] != NULL){
+
+							fprintf(fd, "--running-- pid : %d cpu_t : %d cpu_used : %d\n",queue.running[j]->pid,queue.running[j]->cpu_t, queue.running[j]->cpu_used);
+
+							queue.running[j]->cpu_used += 1;
+
+							//	printf(" after cpu_used increase\n");
+
+							queue.running[j]->last_executed = time;
+
+							//	printf("after recording last_executed\n");
+						}
+					}
+
+					for(j = 0;j<CPU_CORES;j++){
+						_insert(&ret[j].cpu_head, &ret[j].cpu_rear, NULL, queue.running[j], &(ret[j].length));
+					}
 
 					time++;
 
 					//printf("after cpu record\n");
 
-					if(queue.running !=NULL && queue.running->cpu_used == queue.running->cpu_t ){
+					for(j=0;j<CPU_CORES;j++){
+						if(queue.running[j] !=NULL && queue.running[j]->cpu_used == queue.running[j]->cpu_t ){
 
-						fprintf(fd, "terminated\n");
+							fprintf(fd, "terminated\n");
 
-						queue.running->tur_t = (time - queue.running->arrival_t);
-						queue.running = NULL;
-					}//check termination
+							queue.running[j]->tur_t = (time - queue.running[j]->arrival_t);
+							queue.running[j] = NULL;
+						}//check termination
+					}
 
 					//printf("after checking termination\n");
 
@@ -667,19 +707,21 @@ CPU schedule(int val, PROCESS* arr){   //val, for further input variation, arr :
 				int i = 0;
 				int time = 0;
 
-				while(queue.ready_count != 0 || queue.running != NULL || arr[i].pid != -1 || queue.waiting_count != 0){
+				while(scheduling_done(queue.ready_count, queue.running, arr[i].pid, queue.waiting_count)){
 
 					fprintf(fd, "schedule running, next job : arr[%d]  time : %d\n ready: %d waiting: %d\n",i, time, queue.ready_count, queue.waiting_count);
 
-					if(queue.running != NULL && queue.running->cpu_used == queue.running->io_loc[queue.running->io_interrupted]){
+					for(j = 0;j<CPU_CORES;j++){
+						if(queue.running[j] != NULL && queue.running[j]->cpu_used == queue.running[j]->io_loc[queue.running[j]->io_interrupted]){
 
-						fprintf(fd, "running to waiting\n");
+							fprintf(fd, "running to waiting\n");
 
-						queue.running->io_waited = queue.running->io_length[queue.running->io_interrupted];
-						queue.running->io_interrupted += 1;
-						_insert(&queue.waiting_head, &queue.waiting_rear,NULL,queue.running,&queue.waiting_count);
-						queue.running = NULL;
-					} // running to waiting(I/O interrupt)
+							queue.running[j]->io_waited = queue.running[j]->io_length[queue.running[j]->io_interrupted];
+							queue.running[j]->io_interrupted += 1;
+							_insert(&queue.waiting_head, &queue.waiting_rear,NULL,queue.running[j],&queue.waiting_count);
+							queue.running[j] = NULL;
+						} // running to waiting(I/O interrupt)
+					}
 
 					if(queue.waiting_count != 0){
 
@@ -736,42 +778,50 @@ CPU schedule(int val, PROCESS* arr){   //val, for further input variation, arr :
 						}
 					}//arr to ready queue
 
-					if(queue.running == NULL && queue.ready_rear != NULL){
+					for(j=0;j<CPU_CORES;j++){
+						if(queue.running[j] == NULL && queue.ready_rear != NULL){
 
-						fprintf(fd, "ready to running\n");
+							fprintf(fd, "ready to running\n");
 
-						queue.running = queue.ready_rear->process;
-						queue.running->t_wait += (time - queue.running->last_executed);
-						_delete(&queue.ready_head, &queue.ready_rear, queue.ready_rear->llink, queue.ready_rear, &queue.ready_count);
-					}//ready queue to running
-
-
-					if(queue.running != NULL){
-
-						fprintf(fd, "--running-- pid : %d cpu_t : %d cpu_used : %d\n",queue.running->pid,queue.running->cpu_t, queue.running->cpu_used);
-
-						queue.running->cpu_used += 1;
-
-						//	printf(" after cpu_used increase\n");
-
-						queue.running->last_executed = time;
-
-						//	printf("after recording last_executed\n");
+							queue.running[j] = queue.ready_rear->process;
+							queue.running[j]->t_wait += (time - queue.running[j]->last_executed);
+							_delete(&queue.ready_head, &queue.ready_rear, queue.ready_rear->llink, queue.ready_rear, &queue.ready_count);
+						}//ready queue to running
 					}
 
-					_insert(&ret.cpu_head, &ret.cpu_rear, NULL, queue.running, &(ret.length));
+
+					for(j=0;j<CPU_CORES;j++){
+						if(queue.running[j] != NULL){
+
+							fprintf(fd, "--running-- pid : %d cpu_t : %d cpu_used : %d\n",queue.running[j]->pid,queue.running[j]->cpu_t, queue.running[j]->cpu_used);
+
+							queue.running[j]->cpu_used += 1;
+
+							//	printf(" after cpu_used increase\n");
+
+							queue.running[j]->last_executed = time;
+
+							//	printf("after recording last_executed\n");
+						}
+					}
+
+					for(j=0;j<CPU_CORES;j++){
+						_insert(&ret[j].cpu_head, &ret[j].cpu_rear, NULL, queue.running[j], &(ret[j].length));
+					}
 
 					time++;
 
 					//printf("after cpu record\n");
 
-					if(queue.running !=NULL && queue.running->cpu_used == queue.running->cpu_t ){
+					for(j=0;j<CPU_CORES;j++){
+						if(queue.running[j] !=NULL && queue.running[j]->cpu_used == queue.running[j]->cpu_t ){
 
-						fprintf(fd, "terminated\n");
+							fprintf(fd, "terminated\n");
 
-						queue.running->tur_t = (time - queue.running->arrival_t);
-						queue.running = NULL;
-					}//check termination
+							queue.running[j]->tur_t = (time - queue.running[j]->arrival_t);
+							queue.running[j] = NULL;
+						}//check termination
+					}
 
 					//printf("after checking termination\n");
 
@@ -790,26 +840,30 @@ CPU schedule(int val, PROCESS* arr){   //val, for further input variation, arr :
 				int i = 0;
 				int time = 0;
 
-				while(queue.ready_count != 0 || queue.running != NULL || arr[i].pid != -1 || queue.waiting_count != 0){
+				while(scheduling_done(queue.ready_count, queue.running, arr[i].pid, queue.waiting_count)){
 
 					fprintf(fd, "schedule running, next job : arr[%d]  time : %d\n ready: %d waiting: %d\n",i, time, queue.ready_count, queue.waiting_count);
 
-					if(queue.running != NULL && queue.running->cpu_used == queue.running->io_loc[queue.running->io_interrupted]){
+					for(j=0;j<CPU_CORES;j++){
+						if(queue.running[j] != NULL && queue.running[j]->cpu_used == queue.running[j]->io_loc[queue.running[j]->io_interrupted]){
 
-						fprintf(fd, "running to waiting\n");
+							fprintf(fd, "running to waiting\n");
 
-						queue.running->io_waited = queue.running->io_length[queue.running->io_interrupted];
-						queue.running->io_interrupted += 1;
-						queue.running->rr_ts_used = 0;
-						_insert(&queue.waiting_head, &queue.waiting_rear,NULL,queue.running,&queue.waiting_count);
-						queue.running = NULL;
-					} // running to waiting(I/O interrupt)
+							queue.running[j]->io_waited = queue.running[j]->io_length[queue.running[j]->io_interrupted];
+							queue.running[j]->io_interrupted += 1;
+							queue.running[j]->rr_ts_used = 0;
+							_insert(&queue.waiting_head, &queue.waiting_rear,NULL,queue.running[j],&queue.waiting_count);
+							queue.running[j] = NULL;
+						} // running to waiting(I/O interrupt)
+					}
 
-					if(queue.running != NULL && queue.running->rr_ts_used == RR_TIMESLICE){
-						queue.running->rr_ts_used = 0;
-						_insert(&queue.ready_head, &queue.ready_rear,NULL, queue.running, &queue.ready_count);
-						queue.running = NULL;
-					}//rr_ts expired
+					for(j = 0;j<CPU_CORES;j++){
+						if(queue.running[j] != NULL && queue.running[j]->rr_ts_used == RR_TIMESLICE){
+							queue.running[j]->rr_ts_used = 0;
+							_insert(&queue.ready_head, &queue.ready_rear,NULL, queue.running[j], &queue.ready_count);
+							queue.running[j] = NULL;
+						}//rr_ts expired
+					}
 
 					if(queue.waiting_count != 0){
 
@@ -866,44 +920,52 @@ CPU schedule(int val, PROCESS* arr){   //val, for further input variation, arr :
 						}
 					}//arr to ready queue
 
-					if(queue.running == NULL && queue.ready_rear != NULL){
+					for(j=0;j<CPU_CORES;j++){
+						if(queue.running[j] == NULL && queue.ready_rear != NULL){
 
-						fprintf(fd, "ready to running\n");
+							fprintf(fd, "ready to running\n");
 
-						queue.running = queue.ready_rear->process;
-						queue.running->t_wait += (time - queue.running->last_executed);
-						queue.running->rr_ts_used = 0;
-						_delete(&queue.ready_head, &queue.ready_rear, queue.ready_rear->llink, queue.ready_rear, &queue.ready_count);
-					}//ready queue to running
-
-
-					if(queue.running != NULL){
-
-						fprintf(fd, "--running-- pid : %d cpu_t : %d cpu_used : %d\n",queue.running->pid,queue.running->cpu_t, queue.running->cpu_used);
-
-						queue.running->cpu_used += 1;
-						queue.running->rr_ts_used += 1;
-
-						//	printf(" after cpu_used increase\n");
-
-						queue.running->last_executed = time;
-
-						//	printf("after recording last_executed\n");
+							queue.running[j] = queue.ready_rear->process;
+							queue.running[j]->t_wait += (time - queue.running[j]->last_executed);
+							queue.running[j]->rr_ts_used = 0;
+							_delete(&queue.ready_head, &queue.ready_rear, queue.ready_rear->llink, queue.ready_rear, &queue.ready_count);
+						}//ready queue to running
 					}
 
-					_insert(&ret.cpu_head, &ret.cpu_rear, NULL, queue.running, &(ret.length));
+
+					for(j = 0;j<CPU_CORES;j++){
+						if(queue.running[j] != NULL){
+
+							fprintf(fd, "--running-- pid : %d cpu_t : %d cpu_used : %d\n",queue.running[j]->pid,queue.running[j]->cpu_t, queue.running[j]->cpu_used);
+
+							queue.running[j]->cpu_used += 1;
+							queue.running[j]->rr_ts_used += 1;
+
+							//	printf(" after cpu_used increase\n");
+
+							queue.running[j]->last_executed = time;
+
+							//	printf("after recording last_executed\n");
+						}
+					}
+
+					for(j=0;j<CPU_CORES;j++){
+						_insert(&ret[j].cpu_head, &ret[j].cpu_rear, NULL, queue.running[j], &(ret[j].length));
+					}
 
 					time++;
 
 					//printf("after cpu record\n");
 
-					if(queue.running !=NULL && queue.running->cpu_used == queue.running->cpu_t ){
+					for(j =0;j<CPU_CORES;j++){
+						if(queue.running[j] !=NULL && queue.running[j]->cpu_used == queue.running[j]->cpu_t ){
 
-						fprintf(fd, "terminated\n");
+							fprintf(fd, "terminated\n");
 
-						queue.running->tur_t = (time - queue.running->arrival_t);
-						queue.running->rr_ts_used = 0;
-						queue.running = NULL;
+							queue.running[j]->tur_t = (time - queue.running[j]->arrival_t);
+							queue.running[j]->rr_ts_used = 0;
+							queue.running[j] = NULL;
+						}
 					}
 
 					//printf("after checking termination\n");
@@ -922,19 +984,21 @@ CPU schedule(int val, PROCESS* arr){   //val, for further input variation, arr :
 				int i = 0;
 				int time = 0;
 
-				while(queue.ready_count != 0 || queue.running != NULL || arr[i].pid != -1 || queue.waiting_count != 0){
+				while(scheduling_done(queue.ready_count, queue.running, arr[i].pid, queue.waiting_count)){
 
 					fprintf(fd, "schedule running, next job : arr[%d]  time : %d\n ready: %d waiting: %d\n",i, time, queue.ready_count, queue.waiting_count);
 
-					if(queue.running != NULL && queue.running->cpu_used == queue.running->io_loc[queue.running->io_interrupted]){
+					for(j=0;j<CPU_CORES;j++){
+						if(queue.running[j] != NULL && queue.running[j]->cpu_used == queue.running[j]->io_loc[queue.running[j]->io_interrupted]){
 
-						fprintf(fd, "running to waiting\n");
+							fprintf(fd, "running to waiting\n");
 
-						queue.running->io_waited = queue.running->io_length[queue.running->io_interrupted];
-						queue.running->io_interrupted += 1;
-						_insert(&queue.waiting_head, &queue.waiting_rear,NULL,queue.running,&queue.waiting_count);
-						queue.running = NULL;
-					} // running to waiting(I/O interrupt)
+							queue.running[j]->io_waited = queue.running[j]->io_length[queue.running[j]->io_interrupted];
+							queue.running[j]->io_interrupted += 1;
+							_insert(&queue.waiting_head, &queue.waiting_rear,NULL,queue.running[j],&queue.waiting_count);
+							queue.running[j] = NULL;
+						} // running to waiting(I/O interrupt)
+					}
 
 					if(queue.waiting_count != 0){
 
@@ -985,7 +1049,7 @@ CPU schedule(int val, PROCESS* arr){   //val, for further input variation, arr :
 						while(arr[i].pid != -1 && time == arr[i].arrival_t){
 
 							fprintf(fd, "arr to ready \n");
-							
+
 							enque_SJF(&queue.ready_head, &queue.ready_rear, NULL, &arr[i], &queue.ready_count);
 							i++;
 						}
@@ -993,53 +1057,61 @@ CPU schedule(int val, PROCESS* arr){   //val, for further input variation, arr :
 
 
 
-					if(queue.running != NULL && queue.ready_rear != NULL && compare_shorter_job(*(queue.ready_rear->process),*queue.running)>0 ){
+					for(j=0;j<CPU_CORES;j++){
+						if(queue.running[j] != NULL && queue.ready_rear != NULL && compare_shorter_job(*(queue.ready_rear->process),*queue.running[j])>0 ){
 
-						fprintf(fd, "preemption SJF occured\n");
+							fprintf(fd, "preemption SJF occured\n");
 
-						enque_SJF(&queue.ready_head, &queue.ready_rear, NULL, queue.running, &queue.ready_count);
-						queue.running = NULL;
+							enque_SJF(&queue.ready_head, &queue.ready_rear, NULL, queue.running[j], &queue.ready_count);
+							queue.running[j] = NULL;
 
-					}//preemption SJF
-					
-
-
-					if(queue.running == NULL && queue.ready_rear != NULL){
-
-						fprintf(fd, "ready to running\n");
-
-						queue.running = queue.ready_rear->process;
-						queue.running->t_wait += (time - queue.running->last_executed);
-						_delete(&queue.ready_head, &queue.ready_rear, queue.ready_rear->llink, queue.ready_rear, &queue.ready_count);
-					}//ready queue to running
-
-
-					if(queue.running != NULL){
-
-						fprintf(fd, "--running-- pid : %d cpu_t : %d cpu_used : %d\n",queue.running->pid,queue.running->cpu_t, queue.running->cpu_used);
-
-						queue.running->cpu_used += 1;
-
-						//	printf(" after cpu_used increase\n");
-
-						queue.running->last_executed = time;
-
-						//	printf("after recording last_executed\n");
+						}//preemption SJF
 					}
 
-					_insert(&ret.cpu_head, &ret.cpu_rear, NULL, queue.running, &(ret.length));
+
+					for(j=0;j<CPU_CORES;j++){
+						if(queue.running[j] == NULL && queue.ready_rear != NULL){
+
+							fprintf(fd, "ready to running\n");
+
+							queue.running[j] = queue.ready_rear->process;
+							queue.running[j]->t_wait += (time - queue.running[j]->last_executed);
+							_delete(&queue.ready_head, &queue.ready_rear, queue.ready_rear->llink, queue.ready_rear, &queue.ready_count);
+						}//ready queue to running
+					}
+
+					for(j=0;j<CPU_CORES;j++){
+						if(queue.running[j] != NULL){
+
+							fprintf(fd, "--running-- pid : %d cpu_t : %d cpu_used : %d\n",queue.running[j]->pid,queue.running[j]->cpu_t, queue.running[j]->cpu_used);
+
+							queue.running[j]->cpu_used += 1;
+
+							//	printf(" after cpu_used increase\n");
+
+							queue.running[j]->last_executed = time;
+
+							//	printf("after recording last_executed\n");
+						}
+					}
+
+					for(j=0;j<CPU_CORES;j++){
+						_insert(&ret[j].cpu_head, &ret[j].cpu_rear, NULL, queue.running[j], &(ret[j].length));
+					}
 
 					time++;
 
 					//printf("after cpu record\n");
 
-					if(queue.running !=NULL && queue.running->cpu_used == queue.running->cpu_t ){
+					for(j=0;j<CPU_CORES;j++){
+						if(queue.running[j] !=NULL && queue.running[j]->cpu_used == queue.running[j]->cpu_t ){
 
-						fprintf(fd, "terminated\n");
+							fprintf(fd, "terminated\n");
 
-						queue.running->tur_t = (time - queue.running->arrival_t);
-						queue.running = NULL;
-					}//check termination
+							queue.running[j]->tur_t = (time - queue.running[j]->arrival_t);
+							queue.running[j] = NULL;
+						}//check termination
+					}
 
 					//printf("after checking termination\n");
 
@@ -1058,19 +1130,21 @@ CPU schedule(int val, PROCESS* arr){   //val, for further input variation, arr :
 				int i = 0;
 				int time = 0;
 
-				while(queue.ready_count != 0 || queue.running != NULL || arr[i].pid != -1 || queue.waiting_count != 0){
+				while(scheduling_done(queue.ready_count, queue.running, arr[i].pid, queue.waiting_count)){
 
 					fprintf(fd, "schedule running, next job : arr[%d]  time : %d\n ready: %d waiting: %d\n",i, time, queue.ready_count, queue.waiting_count);
 
-					if(queue.running != NULL && queue.running->cpu_used == queue.running->io_loc[queue.running->io_interrupted]){
+					for(j=0;j<CPU_CORES;j++){
+						if(queue.running[j] != NULL && queue.running[j]->cpu_used == queue.running[j]->io_loc[queue.running[j]->io_interrupted]){
 
-						fprintf(fd, "running to waiting\n");
+							fprintf(fd, "running to waiting\n");
 
-						queue.running->io_waited = queue.running->io_length[queue.running->io_interrupted];
-						queue.running->io_interrupted += 1;
-						_insert(&queue.waiting_head, &queue.waiting_rear,NULL,queue.running,&queue.waiting_count);
-						queue.running = NULL;
-					} // running to waiting(I/O interrupt)
+							queue.running[j]->io_waited = queue.running[j]->io_length[queue.running[j]->io_interrupted];
+							queue.running[j]->io_interrupted += 1;
+							_insert(&queue.waiting_head, &queue.waiting_rear,NULL,queue.running[j],&queue.waiting_count);
+							queue.running[j] = NULL;
+						} // running to waiting(I/O interrupt)
+					}
 
 					if(queue.waiting_count != 0){
 
@@ -1126,51 +1200,61 @@ CPU schedule(int val, PROCESS* arr){   //val, for further input variation, arr :
 							i++;
 						}
 					}//arr to ready queue
-					
-					if(queue.running != NULL && queue.ready_rear != NULL && compare_priority(*(queue.ready_rear->process), *queue.running)>0){
 
-						fprintf(fd, "preemption priority occured\n");
+					for(j=0;j<CPU_CORES;j++){
+						if(queue.running[j] != NULL && queue.ready_rear != NULL && compare_priority(*(queue.ready_rear->process), *queue.running[j])>0){
 
-						enque_Priority(&queue.ready_head, &queue.ready_rear, NULL, queue.running, &queue.ready_count);
-						queue.running = NULL;
-						
+							fprintf(fd, "preemption priority occured\n");
+
+							enque_Priority(&queue.ready_head, &queue.ready_rear, NULL, queue.running[j], &queue.ready_count);
+							queue.running[j] = NULL;
+
+						}
 					}
 
-					if(queue.running == NULL && queue.ready_rear != NULL){
+					for(j=0;j<CPU_CORES;j++){
+						if(queue.running[j] == NULL && queue.ready_rear != NULL){
 
-						fprintf(fd, "ready to running\n");
+							fprintf(fd, "ready to running\n");
 
-						queue.running = queue.ready_rear->process;
-						queue.running->t_wait += (time - queue.running->last_executed);
-						_delete(&queue.ready_head, &queue.ready_rear, queue.ready_rear->llink, queue.ready_rear, &queue.ready_count);
-					}//ready queue to running
-
-					if(queue.running != NULL){
-
-						fprintf(fd, "--running-- pid : %d cpu_t : %d cpu_used : %d\n",queue.running->pid,queue.running->cpu_t, queue.running->cpu_used);
-
-						queue.running->cpu_used += 1;
-
-						//	printf(" after cpu_used increase\n");
-
-						queue.running->last_executed = time;
-
-						//	printf("after recording last_executed\n");
+							queue.running[j] = queue.ready_rear->process;
+							queue.running[j]->t_wait += (time - queue.running[j]->last_executed);
+							_delete(&queue.ready_head, &queue.ready_rear, queue.ready_rear->llink, queue.ready_rear, &queue.ready_count);
+						}//ready queue to running
 					}
 
-					_insert(&ret.cpu_head, &ret.cpu_rear, NULL, queue.running, &(ret.length));
+					for(j=0;j<CPU_CORES;j++){
+						if(queue.running[j] != NULL){
+
+							fprintf(fd, "--running-- pid : %d cpu_t : %d cpu_used : %d\n",queue.running[j]->pid,queue.running[j]->cpu_t, queue.running[j]->cpu_used);
+
+							queue.running[j]->cpu_used += 1;
+
+							//	printf(" after cpu_used increase\n");
+
+							queue.running[j]->last_executed = time;
+
+							//	printf("after recording last_executed\n");
+						}
+					}
+
+					for(j=0;j<CPU_CORES;j++){
+						_insert(&ret[j].cpu_head, &ret[j].cpu_rear, NULL, queue.running[j], &(ret[j].length));
+					}
 
 					time++;
 
 					//printf("after cpu record\n");
 
-					if(queue.running !=NULL && queue.running->cpu_used == queue.running->cpu_t ){
+					for(j=0;j<CPU_CORES;j++){
+						if(queue.running[j] !=NULL && queue.running[j]->cpu_used == queue.running[j]->cpu_t ){
 
-						fprintf(fd, "terminated\n");
+							fprintf(fd, "terminated\n");
 
-						queue.running->tur_t = (time - queue.running->arrival_t);
-						queue.running = NULL;
-					}//check termination
+							queue.running[j]->tur_t = (time - queue.running[j]->arrival_t);
+							queue.running[j] = NULL;
+						}//check termination
+					}
 
 					//printf("after checking termination\n");
 
@@ -1189,26 +1273,30 @@ CPU schedule(int val, PROCESS* arr){   //val, for further input variation, arr :
 				int i = 0;
 				int time = 0;
 
-				while(queue.ready_count != 0 || queue.running != NULL || arr[i].pid != -1 || queue.waiting_count != 0){
+				while(scheduling_done(queue.ready_count, queue.running, arr[i].pid, queue.waiting_count)){
 
 					fprintf(fd, "schedule running, next job : arr[%d]  time : %d\n ready: %d waiting: %d\n",i, time, queue.ready_count, queue.waiting_count);
 
-					if(queue.running != NULL && queue.running->cpu_used == queue.running->io_loc[queue.running->io_interrupted]){
+					for(j=0;j<CPU_CORES;j++){
+						if(queue.running[j] != NULL && queue.running[j]->cpu_used == queue.running[j]->io_loc[queue.running[j]->io_interrupted]){
 
-						fprintf(fd, "running to waiting\n");
+							fprintf(fd, "running to waiting\n");
 
-						queue.running->io_waited = queue.running->io_length[queue.running->io_interrupted];
-						queue.running->io_interrupted += 1;
-						queue.running->rr_ts_used = 0;
-						_insert(&queue.waiting_head, &queue.waiting_rear,NULL,queue.running,&queue.waiting_count);
-						queue.running = NULL;
-					} // running to waiting(I/O interrupt)
+							queue.running[j]->io_waited = queue.running[j]->io_length[queue.running[j]->io_interrupted];
+							queue.running[j]->io_interrupted += 1;
+							queue.running[j]->rr_ts_used = 0;
+							_insert(&queue.waiting_head, &queue.waiting_rear,NULL,queue.running[j],&queue.waiting_count);
+							queue.running[j] = NULL;
+						} // running to waiting(I/O interrupt)
+					}
 
-					if(queue.running != NULL && queue.running->rr_ts_used == CFS_TIMESLICE){
-						queue.running->rr_ts_used = 0;
-						enque_vruntime(&queue.ready_head, &queue.ready_rear,NULL, queue.running, &queue.ready_count);
-						queue.running = NULL;
-					}//ts expired
+					for(j=0;j<CPU_CORES;j++){
+						if(queue.running[j] != NULL && queue.running[j]->rr_ts_used == CFS_TIMESLICE){
+							queue.running[j]->rr_ts_used = 0;
+							enque_vruntime(&queue.ready_head, &queue.ready_rear,NULL, queue.running[j], &queue.ready_count);
+							queue.running[j] = NULL;
+						}//ts expired
+					}
 
 					if(queue.waiting_count != 0){
 
@@ -1265,44 +1353,51 @@ CPU schedule(int val, PROCESS* arr){   //val, for further input variation, arr :
 						}
 					}//arr to ready queue
 
-					if(queue.running == NULL && queue.ready_rear != NULL){
+					for(j=0;j<CPU_CORES;j++){
+						if(queue.running[j] == NULL && queue.ready_rear != NULL){
 
-						fprintf(fd, "ready to running\n");
+							fprintf(fd, "ready to running\n");
 
-						queue.running = queue.ready_rear->process;
-						queue.running->t_wait += (time - queue.running->last_executed);
-						queue.running->rr_ts_used = 0;
-						_delete(&queue.ready_head, &queue.ready_rear, queue.ready_rear->llink, queue.ready_rear, &queue.ready_count);
-					}//ready queue to running
-
-
-					if(queue.running != NULL){
-
-						fprintf(fd, "--running-- pid : %d cpu_t : %d cpu_used : %d\n",queue.running->pid,queue.running->cpu_t, queue.running->cpu_used);
-
-						queue.running->cpu_used += 1;
-						queue.running->rr_ts_used += 1;
-
-						//	printf(" after cpu_used increase\n");
-
-						queue.running->last_executed = time;
-
-						//	printf("after recording last_executed\n");
+							queue.running[j] = queue.ready_rear->process;
+							queue.running[j]->t_wait += (time - queue.running[j]->last_executed);
+							queue.running[j]->rr_ts_used = 0;
+							_delete(&queue.ready_head, &queue.ready_rear, queue.ready_rear->llink, queue.ready_rear, &queue.ready_count);
+						}//ready queue to running
 					}
 
-					_insert(&ret.cpu_head, &ret.cpu_rear, NULL, queue.running, &(ret.length));
+					for(j=0;j<CPU_CORES;j++){
+						if(queue.running[j] != NULL){
+
+							fprintf(fd, "--running-- pid : %d cpu_t : %d cpu_used : %d\n",queue.running[j]->pid,queue.running[j]->cpu_t, queue.running[j]->cpu_used);
+
+							queue.running[j]->cpu_used += 1;
+							queue.running[j]->rr_ts_used += 1;
+
+							//	printf(" after cpu_used increase\n");
+
+							queue.running[j]->last_executed = time;
+
+							//	printf("after recording last_executed\n");
+						}
+					}
+
+					for(j=0;j<CPU_CORES;j++){
+						_insert(&ret[j].cpu_head, &ret[j].cpu_rear, NULL, queue.running[j], &(ret[j].length));
+					}
 
 					time++;
 
 					//printf("after cpu record\n");
 
-					if(queue.running !=NULL && queue.running->cpu_used == queue.running->cpu_t ){
+					for(j=0;j<CPU_CORES;j++){
+						if(queue.running[j] !=NULL && queue.running[j]->cpu_used == queue.running[j]->cpu_t ){
 
-						fprintf(fd, "terminated\n");
+							fprintf(fd, "terminated\n");
 
-						queue.running->tur_t = (time - queue.running->arrival_t);
-						queue.running->rr_ts_used = 0;
-						queue.running = NULL;
+							queue.running[j]->tur_t = (time - queue.running[j]->arrival_t);
+							queue.running[j]->rr_ts_used = 0;
+							queue.running[j] = NULL;
+						}
 					}
 
 					//printf("after checking termination\n");
@@ -1317,49 +1412,58 @@ CPU schedule(int val, PROCESS* arr){   //val, for further input variation, arr :
 }//schedule
 
 
-EVAL_CPU evaluate(CPU c, PROCESS* arr, FILE* output){
+EVAL_CPU evaluate(CPU* c, PROCESS* arr, FILE* output){
 
 	EVAL_CPU ret;
 
+	int i = 0;
+
 	ret.total_runtime = 0;
-	ret.cpu_util_time = 0;
-	ret.cpu_idle_time = 0;
+	for(i = 0;i<CPU_CORES;i++){
+		ret.cpu_util_time[i] = 0;
+		ret.cpu_idle_time[i] = 0;
+	}
 	ret.total_wait_time = 0;
 	ret.avg_wait_time = 0;
 	ret.total_tur_time = 0;
 	ret.avg_tur_time = 0;
 
-	fprintf(fd, "cpu record length : %d\n", c.length);
+	fprintf(fd, "cpu record length : %d\n", c[i].length);
 
-	NODE* temp = c.cpu_rear;
 
-	while(temp != c.cpu_head){
-		ret.total_runtime += 1;
-		if(temp->process == NULL){
-			ret.cpu_idle_time += 1;
-			fprintf(output,"0.");
+	for(i = 0;i<CPU_CORES;i++){
+
+		NODE* temp = c[i].cpu_rear;
+
+		fprintf(output, "gantt chart for CPU %d : \n",i+1);
+		while(temp != c[i].cpu_head){
+			if(temp->process == NULL){
+				ret.cpu_idle_time[i] += 1;
+				fprintf(output,"0.");
+			}
+			else {
+				ret.cpu_util_time[i] += 1;
+				fprintf(output,"%d.",temp->process->pid);
+			}
+			temp = temp->llink;
 		}
-		else {
-			ret.cpu_util_time += 1;
+
+		if(temp->process == NULL){
+			ret.cpu_idle_time[i] += 1;
+			fprintf(output,"0.");
+		} else {
+			ret.cpu_util_time[i] += 1;
 			fprintf(output,"%d.",temp->process->pid);
 		}
-		temp = temp->llink;
+		fprintf(output,"\n");
 	}
 
-
-
-	if(temp->process == NULL){
-		ret.cpu_idle_time += 1;
-		fprintf(output,"0.");
-	} else {
-		ret.cpu_util_time += 1;
-		fprintf(output,"%d.",temp->process->pid);
+	for(i = 0;i<CPU_CORES;i++){
+		if(ret.total_runtime < ret.cpu_idle_time[i]+ret.cpu_util_time[i])
+			ret.total_runtime = ret.cpu_idle_time[i] + ret.cpu_util_time[i];
 	}
-	ret.total_runtime += 1;
-	fprintf(output,"\n");
 
-
-	int i = 0;
+	i = 0;
 	while(arr[i].pid != -1){
 		ret.total_wait_time += arr[i].t_wait;
 		ret.total_tur_time += arr[i].tur_t;
@@ -1378,8 +1482,10 @@ void printData(EVAL_CPU ec, FILE* output){
 
 
 	fprintf(output, "total cpu runtime : %d\n", ec.total_runtime);
-	fprintf(output, "cpu idle time : %d\n", ec.cpu_idle_time);
-	fprintf(output, "cpu utilization time : %d\n", ec.cpu_util_time);
+	for(int i = 0;i<CPU_CORES;i++){
+		fprintf(output, "cpu %d idle time : %d\n",i+1 , ec.cpu_idle_time[i]);
+		fprintf(output, "cpu %d utilization time : %d\n",i+1 , ec.cpu_util_time[i]);
+	}
 	fprintf(output, "total process waiting time : %d\n", ec.total_wait_time);
 	fprintf(output, "average process waiting time : %f\n", ec.avg_wait_time);
 	fprintf(output, "total turnaround time : %d\n", ec.total_tur_time);
@@ -1408,7 +1514,7 @@ int main(){
 	}
 	arr[i].pid = -1;;
 
-	CPU c;
+	CPU* c;
 	EVAL_CPU ec;
 
 
@@ -1416,9 +1522,10 @@ int main(){
 
 	printf("scheduling array of processes with FCFS, log will be recorded on ./cpuss.log\n");
 	c = schedule(FCFS, arr);
-	
+
 	printf("evaluating CPU usage\n");
 	printf("gantt chart : \n");
+
 	ec = evaluate(c, arr, stdout);
 	printData(ec, stdout);
 
@@ -1430,77 +1537,77 @@ int main(){
 	fprintf(plog,"process data aftere execution of FCFS\n\n");
 	for(i=0;i<PROCESS_MAX;i++)
 		printProcessData(plog, &arr[i]);
-
-	printf("===========resetting process data===================\n");
-	printf("\n");
-
-	for(i=0;i<PROCESS_MAX;i++)
-		resetProcess(&arr[i]);
-	printf("process initialized\n");
-
-	printf("scheduling array of processes with NP-SJF, log will be recorded on ./cpuss.log\n");
-	c = schedule(NPSJF, arr);
 	
-	printf("evaluating CPU usage\n");
-	printf("gantt chart : \n");
-	ec = evaluate(c, arr, stdout);
-	printData(ec, stdout);
+	   printf("===========resetting process data===================\n");
+	   printf("\n");
 
-	fprintf(summary, "NP-SJF\n\n");
-	ec = evaluate(c, arr, summary);
-	printData(ec, summary);
+	   for(i=0;i<PROCESS_MAX;i++)
+	   resetProcess(&arr[i]);
+	   printf("process initialized\n");
 
-	fprintf(plog,"process data aftere execution of NPSJF\n\n");
-	for(i=0;i<PROCESS_MAX;i++)
-		printProcessData(plog, &arr[i]);
+	   printf("scheduling array of processes with NP-SJF, log will be recorded on ./cpuss.log\n");
+	   c = schedule(NPSJF, arr);
 
-	printf("===========resetting process data===================\n");
-	printf("\n");
+	   printf("evaluating CPU usage\n");
+	   printf("gantt chart : \n");
+	   ec = evaluate(c, arr, stdout);
+	   printData(ec, stdout);
 
-	for(i=0;i<PROCESS_MAX;i++)
-		resetProcess(&arr[i]);
-	printf("process initialized\n");
+	   fprintf(summary, "NP-SJF\n\n");
+	   ec = evaluate(c, arr, summary);
+	   printData(ec, summary);
 
-	printf("scheduling array of processes with NP-Priority, log will be recorded on ./cpuss.log\n");
-	c = schedule(NPPRIO, arr);
-	
-	printf("evaluating CPU usage\n");
-	printf("gantt chart : \n");
-	ec = evaluate(c, arr, stdout);
-	printData(ec, stdout);
+	   fprintf(plog,"process data aftere execution of NPSJF\n\n");
+	   for(i=0;i<PROCESS_MAX;i++)
+	   printProcessData(plog, &arr[i]);
 
-	fprintf(summary, "NP-priority\n\n");
-	ec = evaluate(c, arr, summary);
-	printData(ec, summary);
+	   printf("===========resetting process data===================\n");
+	   printf("\n");
 
-	fprintf(plog,"process data aftere execution of NP-priority\n\n");
-	for(i=0;i<PROCESS_MAX;i++)
-		printProcessData(plog, &arr[i]);
+	   for(i=0;i<PROCESS_MAX;i++)
+	   resetProcess(&arr[i]);
+	   printf("process initialized\n");
 
-	printf("===========resetting process data===================\n");
-	printf("\n");
+	   printf("scheduling array of processes with NP-Priority, log will be recorded on ./cpuss.log\n");
+	   c = schedule(NPPRIO, arr);
 
-	for(i=0;i<PROCESS_MAX;i++)
-		resetProcess(&arr[i]);
-	printf("process initialized\n");
+	   printf("evaluating CPU usage\n");
+	   printf("gantt chart : \n");
+	   ec = evaluate(c, arr, stdout);
+	   printData(ec, stdout);
 
-	printf("scheduling array of processes with RR, log will be recorded on ./cpuss.log\n");
-	c = schedule(RR, arr);
-	
-	printf("evaluating CPU usage\n");
-	printf("gantt chart : \n");
-	ec = evaluate(c, arr, stdout);
-	printData(ec, stdout);
+	   fprintf(summary, "NP-priority\n\n");
+	   ec = evaluate(c, arr, summary);
+	   printData(ec, summary);
 
-	fprintf(summary, "RR\n\n");
-	ec = evaluate(c, arr, summary);
-	printData(ec, summary);
+	   fprintf(plog,"process data aftere execution of NP-priority\n\n");
+	   for(i=0;i<PROCESS_MAX;i++)
+	   printProcessData(plog, &arr[i]);
 
-	fprintf(plog,"process data aftere execution of RR\n\n");
-	for(i=0;i<PROCESS_MAX;i++)
-		printProcessData(plog, &arr[i]);
+	   printf("===========resetting process data===================\n");
+	   printf("\n");
 
-	printf("===========resetting process data===================\n");
+	   for(i=0;i<PROCESS_MAX;i++)
+	   resetProcess(&arr[i]);
+	   printf("process initialized\n");
+
+	   printf("scheduling array of processes with RR, log will be recorded on ./cpuss.log\n");
+	   c = schedule(RR, arr);
+
+	   printf("evaluating CPU usage\n");
+	   printf("gantt chart : \n");
+	   ec = evaluate(c, arr, stdout);
+	   printData(ec, stdout);
+
+	   fprintf(summary, "RR\n\n");
+	   ec = evaluate(c, arr, summary);
+	   printData(ec, summary);
+
+	   fprintf(plog,"process data aftere execution of RR\n\n");
+	   for(i=0;i<PROCESS_MAX;i++)
+	   printProcessData(plog, &arr[i]);
+
+	   printf("===========resetting process data===================\n");
 	printf("\n");
 
 	for(i=0;i<PROCESS_MAX;i++)
@@ -1509,7 +1616,7 @@ int main(){
 
 	printf("scheduling array of processes with Preemptive SJF, log will be recorded on ./cpuss.log\n");
 	c = schedule(PSJF, arr);
-	
+
 	printf("evaluating CPU usage\n");
 	printf("gantt chart : \n");
 	ec = evaluate(c, arr, stdout);
@@ -1532,7 +1639,7 @@ int main(){
 
 	printf("scheduling array of processes with Preemptive Priority, log will be recorded on ./cpuss.log\n");
 	c = schedule(PPRIO, arr);
-	
+
 	printf("evaluating CPU usage\n");
 	printf("gantt chart : \n");
 	ec = evaluate(c, arr, stdout);
@@ -1555,7 +1662,7 @@ int main(){
 
 	printf("scheduling array of processes with CFS-like scheduling, log will be recorded on ./cpuss.log\n");
 	c = schedule(CFS, arr);
-	
+
 	printf("evaluating CPU usage\n");
 	printf("gantt chart : \n");
 	ec = evaluate(c, arr, stdout);
@@ -1569,6 +1676,7 @@ int main(){
 	for(i=0;i<PROCESS_MAX;i++)
 		printProcessData(plog, &arr[i]);
 
+	
 	fclose(fd);
 	fclose(plog);
 
