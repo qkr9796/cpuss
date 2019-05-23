@@ -4,14 +4,14 @@
 #include <string.h>
 #include <fcntl.h>
 
-#define PROCESS_MAX 10
-#define CPU_BIRST_MAX 30
-#define IO_BIRST_LENGTH_MAX 10
-#define ARRIVAL_TIME_MAX 0
-#define PRIORITY_MAX 2
-#define IO_INTERRUPT_MAX 0
+#define PROCESS_MAX 20
+#define CPU_BIRST_MAX 50
+#define IO_BIRST_LENGTH_MAX 20
+#define ARRIVAL_TIME_MAX 100
+#define PRIORITY_MAX 30
+#define IO_INTERRUPT_MAX 3
 #define RR_TIMESLICE 5
-#define CFS_TIMESLICE 5
+#define CFS_BASE_TIMESLICE 2
 
 #define CPU_CORES 4
 
@@ -61,6 +61,8 @@ typedef struct process{
 	int rr_ts_used; //roud-robin timeslice used
 
 	float vruntime;
+	int cfs_timeslice;
+	float weight;
 
 	int last_executed; //internal value for calculating waiting time
 
@@ -152,6 +154,14 @@ static void _delete( NODE** headPtr, NODE** rearPtr,  NODE* pPre, NODE* pLoc, in
 	return;
 }
 
+void destroyQueue(NODE* head){
+	while(head != NULL){
+		NODE* temp = head;
+		head = head->rlink;
+		free(temp);
+	}
+}
+
 static void printNode(NODE* headPtr){
 	while(headPtr!=NULL){
 		printf("pid%d->", headPtr->process->pid);
@@ -160,7 +170,7 @@ static void printNode(NODE* headPtr){
 }
 
 void setVruntime(PROCESS* process){
-	process->vruntime = process->cpu_used / process->priority;
+	process->vruntime = process->cpu_used / process->weight;
 }
 
 int compare_shorter_vruntime(PROCESS p1, PROCESS p2){
@@ -298,6 +308,8 @@ PROCESS create_Process(){
 	ret.rr_ts_used = 0;
 
 	ret.vruntime = 0;
+	ret.weight = (float)5*ret.priority / PRIORITY_MAX;
+	ret.cfs_timeslice = 1 + ret.weight * CFS_BASE_TIMESLICE;
 
 	ret.last_executed = ret.arrival_t;
 
@@ -335,7 +347,7 @@ PROCESS create_Process(){
 	fprintf(plog, "arrival time: %d, cpu time: %d, priority: %d\n",ret.arrival_t, ret.cpu_t,ret.priority);
 	fprintf(plog, "times of I/O: %d\n", ret.io_count);
 	for(i = 0;i<ret.io_count;i++)
-		fprintf(plog, "location: %d, length: %d\n\n",ret.io_loc[i],ret.io_length[i]);
+		fprintf(plog, "location: %d, length: %d\n",ret.io_loc[i],ret.io_length[i]);
 
 
 	return ret;
@@ -428,7 +440,6 @@ CPU* schedule(int val, PROCESS* arr){   //val, for further input variation, arr 
 	int j = 0;
 
 	QUEUE queue = configure(); 
-
 
 
 	switch(val){
@@ -1063,6 +1074,7 @@ CPU* schedule(int val, PROCESS* arr){   //val, for further input variation, arr 
 							fprintf(fd, "preemption SJF occured\n");
 
 							enque_SJF(&queue.ready_head, &queue.ready_rear, NULL, queue.running[j], &queue.ready_count);
+							queue.running[j]->last_executed = time;
 							queue.running[j] = NULL;
 
 						}//preemption SJF
@@ -1207,6 +1219,7 @@ CPU* schedule(int val, PROCESS* arr){   //val, for further input variation, arr 
 							fprintf(fd, "preemption priority occured\n");
 
 							enque_Priority(&queue.ready_head, &queue.ready_rear, NULL, queue.running[j], &queue.ready_count);
+							queue.running[j]->last_executed = time;
 							queue.running[j] = NULL;
 
 						}
@@ -1291,7 +1304,7 @@ CPU* schedule(int val, PROCESS* arr){   //val, for further input variation, arr 
 					}
 
 					for(j=0;j<CPU_CORES;j++){
-						if(queue.running[j] != NULL && queue.running[j]->rr_ts_used == CFS_TIMESLICE){
+						if(queue.running[j] != NULL && queue.running[j]->rr_ts_used == queue.running[j]->cfs_timeslice){
 							queue.running[j]->rr_ts_used = 0;
 							enque_vruntime(&queue.ready_head, &queue.ready_rear,NULL, queue.running[j], &queue.ready_count);
 							queue.running[j] = NULL;
@@ -1409,6 +1422,9 @@ CPU* schedule(int val, PROCESS* arr){   //val, for further input variation, arr 
 
 	}//switch
 
+	destroyQueue(queue.ready_head);
+	destroyQueue(queue.waiting_head);
+
 }//schedule
 
 
@@ -1520,6 +1536,74 @@ int main(){
 
 	printf("process initialized, data on ./cpuss.log\n");
 
+	
+	int j = 1;
+	while(j<8){
+		
+		printf("\ninitializing Process\n");
+		for(i=0;i<PROCESS_MAX;i++)
+			resetProcess(&arr[i]);
+		printf("=======process initialized=======\n");
+
+		switch(j){
+			case 1:
+				printf("scheduling array of processes with FCFS, log will be recorded on ./cpuss.log\n");
+				fprintf(summary, "FCFS\n\n");
+				fprintf(plog,"process data aftere execution of FCFS\n\n");
+				break;
+			case 2:
+				printf("scheduling array of processes with NP-SJF, log will be recorded on ./cpuss.log\n");
+				fprintf(summary, "NP-SJF\n\n");
+				fprintf(plog,"process data aftere execution of NP-SJF\n\n");
+				break;
+			case 3:
+				printf("scheduling array of processes with NP-Priority, log will be recorded on ./cpuss.log\n");
+				fprintf(summary, "NP-Priority\n\n");
+				fprintf(plog,"process data aftere execution of NP-Priority\n\n");
+				break;
+			case 4:
+				printf("scheduling array of processes with RR, log will be recorded on ./cpuss.log\n");
+				fprintf(summary, "RR\n\n");
+				fprintf(plog,"process data aftere execution of RR\n\n");
+				break;
+			case 5:
+				printf("scheduling array of processes with Preemptive SJF, log will be recorded on ./cpuss.log\n");
+				fprintf(summary, "Preemptive SJF\n\n");
+				fprintf(plog,"process data aftere execution of Preemptive SJF\n\n");
+				break;
+			case 6:
+				printf("scheduling array of processes with Preemptive Priority, log will be recorded on ./cpuss.log\n");
+				fprintf(summary, "Preemptive Priority\n\n");
+				fprintf(plog,"process data aftere execution of Preemptive Priority\n\n");
+				break;
+			case 7:
+				printf("scheduling array of processes with CFS-like scheduling, log will be recorded on ./cpuss.log\n");
+				fprintf(summary, "CFS\n\n");
+				fprintf(plog,"process data aftere execution of CFS\n\n");
+				break;
+		}
+
+		c = schedule(j, arr);
+		printf("evaluating CPU usage\n");
+		ec = evaluate(c, arr, stdout);
+		printData(ec, stdout);
+
+
+		ec = evaluate(c, arr, summary);
+		printData(ec, summary);
+
+
+		for(i=0;i<PROCESS_MAX;i++)
+			printProcessData(plog, &arr[i]);
+	
+		for(i=0;i<CPU_CORES;i++)
+			destroyQueue(c[i].cpu_head);
+
+		j++;
+	}// while
+
+	/*
+
 	printf("scheduling array of processes with FCFS, log will be recorded on ./cpuss.log\n");
 	c = schedule(FCFS, arr);
 
@@ -1537,77 +1621,80 @@ int main(){
 	fprintf(plog,"process data aftere execution of FCFS\n\n");
 	for(i=0;i<PROCESS_MAX;i++)
 		printProcessData(plog, &arr[i]);
-	
-	   printf("===========resetting process data===================\n");
-	   printf("\n");
 
-	   for(i=0;i<PROCESS_MAX;i++)
-	   resetProcess(&arr[i]);
-	   printf("process initialized\n");
+	for(i=0;i<CPU_CORES;i++)
+		destroyQueue(c[i].cpu_head);
 
-	   printf("scheduling array of processes with NP-SJF, log will be recorded on ./cpuss.log\n");
-	   c = schedule(NPSJF, arr);
+	printf("===========resetting process data===================\n");
+	printf("\n");
 
-	   printf("evaluating CPU usage\n");
-	   printf("gantt chart : \n");
-	   ec = evaluate(c, arr, stdout);
-	   printData(ec, stdout);
+	for(i=0;i<PROCESS_MAX;i++)
+		resetProcess(&arr[i]);
+	printf("process initialized\n");
 
-	   fprintf(summary, "NP-SJF\n\n");
-	   ec = evaluate(c, arr, summary);
-	   printData(ec, summary);
+	printf("scheduling array of processes with NP-SJF, log will be recorded on ./cpuss.log\n");
+	c = schedule(NPSJF, arr);
 
-	   fprintf(plog,"process data aftere execution of NPSJF\n\n");
-	   for(i=0;i<PROCESS_MAX;i++)
-	   printProcessData(plog, &arr[i]);
+	printf("evaluating CPU usage\n");
+	printf("gantt chart : \n");
+	ec = evaluate(c, arr, stdout);
+	printData(ec, stdout);
 
-	   printf("===========resetting process data===================\n");
-	   printf("\n");
+	fprintf(summary, "NP-SJF\n\n");
+	ec = evaluate(c, arr, summary);
+	printData(ec, summary);
 
-	   for(i=0;i<PROCESS_MAX;i++)
-	   resetProcess(&arr[i]);
-	   printf("process initialized\n");
+	fprintf(plog,"process data aftere execution of NPSJF\n\n");
+	for(i=0;i<PROCESS_MAX;i++)
+		printProcessData(plog, &arr[i]);
 
-	   printf("scheduling array of processes with NP-Priority, log will be recorded on ./cpuss.log\n");
-	   c = schedule(NPPRIO, arr);
+	printf("===========resetting process data===================\n");
+	printf("\n");
 
-	   printf("evaluating CPU usage\n");
-	   printf("gantt chart : \n");
-	   ec = evaluate(c, arr, stdout);
-	   printData(ec, stdout);
+	for(i=0;i<PROCESS_MAX;i++)
+		resetProcess(&arr[i]);
+	printf("process initialized\n");
 
-	   fprintf(summary, "NP-priority\n\n");
-	   ec = evaluate(c, arr, summary);
-	   printData(ec, summary);
+	printf("scheduling array of processes with NP-Priority, log will be recorded on ./cpuss.log\n");
+	c = schedule(NPPRIO, arr);
 
-	   fprintf(plog,"process data aftere execution of NP-priority\n\n");
-	   for(i=0;i<PROCESS_MAX;i++)
-	   printProcessData(plog, &arr[i]);
+	printf("evaluating CPU usage\n");
+	printf("gantt chart : \n");
+	ec = evaluate(c, arr, stdout);
+	printData(ec, stdout);
 
-	   printf("===========resetting process data===================\n");
-	   printf("\n");
+	fprintf(summary, "NP-priority\n\n");
+	ec = evaluate(c, arr, summary);
+	printData(ec, summary);
 
-	   for(i=0;i<PROCESS_MAX;i++)
-	   resetProcess(&arr[i]);
-	   printf("process initialized\n");
+	fprintf(plog,"process data aftere execution of NP-priority\n\n");
+	for(i=0;i<PROCESS_MAX;i++)
+		printProcessData(plog, &arr[i]);
 
-	   printf("scheduling array of processes with RR, log will be recorded on ./cpuss.log\n");
-	   c = schedule(RR, arr);
+	printf("===========resetting process data===================\n");
+	printf("\n");
 
-	   printf("evaluating CPU usage\n");
-	   printf("gantt chart : \n");
-	   ec = evaluate(c, arr, stdout);
-	   printData(ec, stdout);
+	for(i=0;i<PROCESS_MAX;i++)
+		resetProcess(&arr[i]);
+	printf("process initialized\n");
 
-	   fprintf(summary, "RR\n\n");
-	   ec = evaluate(c, arr, summary);
-	   printData(ec, summary);
+	printf("scheduling array of processes with RR, log will be recorded on ./cpuss.log\n");
+	c = schedule(RR, arr);
 
-	   fprintf(plog,"process data aftere execution of RR\n\n");
-	   for(i=0;i<PROCESS_MAX;i++)
-	   printProcessData(plog, &arr[i]);
+	printf("evaluating CPU usage\n");
+	printf("gantt chart : \n");
+	ec = evaluate(c, arr, stdout);
+	printData(ec, stdout);
 
-	   printf("===========resetting process data===================\n");
+	fprintf(summary, "RR\n\n");
+	ec = evaluate(c, arr, summary);
+	printData(ec, summary);
+
+	fprintf(plog,"process data aftere execution of RR\n\n");
+	for(i=0;i<PROCESS_MAX;i++)
+		printProcessData(plog, &arr[i]);
+
+	printf("===========resetting process data===================\n");
 	printf("\n");
 
 	for(i=0;i<PROCESS_MAX;i++)
@@ -1675,8 +1762,9 @@ int main(){
 	fprintf(plog,"process data aftere execution of CFS\n\n");
 	for(i=0;i<PROCESS_MAX;i++)
 		printProcessData(plog, &arr[i]);
+	*/
 
-	
+
 	fclose(fd);
 	fclose(plog);
 
