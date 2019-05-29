@@ -4,16 +4,16 @@
 #include <string.h>
 #include <fcntl.h>
 
-#define PROCESS_MAX 20
-#define CPU_BIRST_MAX 50
+#define PROCESS_MAX 2
+#define CPU_BIRST_MAX 300
 #define IO_BIRST_LENGTH_MAX 20
-#define ARRIVAL_TIME_MAX 100
-#define PRIORITY_MAX 30
-#define IO_INTERRUPT_MAX 3
+#define ARRIVAL_TIME_MAX 50
+#define PRIORITY_MAX 2
+#define IO_INTERRUPT_MAX 0
 #define RR_TIMESLICE 5
 #define CFS_BASE_TIMESLICE 2
 
-#define CPU_CORES 4
+#define CPU_CORES 1
 
 #define FCFS 1
 #define NPSJF 2
@@ -29,6 +29,7 @@ typedef int bool;
 
 static int pid_ref = 1;
 
+static float weight_sum = 0;
 
 typedef struct eval_cpu{
 	int total_runtime;
@@ -169,8 +170,11 @@ static void printNode(NODE* headPtr){
 	}
 }
 
-void setVruntime(PROCESS* process){
-	process->vruntime = process->cpu_used / process->weight;
+void setVruntime(PROCESS* process, int time){
+	if(process->vruntime == -1)
+		process->vruntime = time / process->weight * weight_sum / process->weight * weight_sum;
+	else
+		process->vruntime += (process->cfs_timeslice - process->rr_ts_used) / process->weight * weight_sum;
 }
 
 int compare_shorter_vruntime(PROCESS p1, PROCESS p2){
@@ -185,7 +189,7 @@ int compare_shorter_vruntime(PROCESS p1, PROCESS p2){
 static int enque_vruntime(NODE** headPtr, NODE** rearPtr,void* np, PROCESS* process, int* count){
 	NODE* pPre = NULL;
 	NODE* pLoc = *headPtr;
-	setVruntime(process);
+	setVruntime(process, 0);
 	_search(&pPre, &pLoc, *process, compare_shorter_vruntime);
 	_insert(headPtr, rearPtr, pPre, process, count);
 	return 1;
@@ -307,9 +311,11 @@ PROCESS create_Process(){
 
 	ret.rr_ts_used = 0;
 
-	ret.vruntime = 0;
+	ret.vruntime = -1;
 	ret.weight = (float)5*ret.priority / PRIORITY_MAX;
 	ret.cfs_timeslice = 1 + ret.weight * CFS_BASE_TIMESLICE;
+
+	weight_sum += ret.weight;
 
 	ret.last_executed = ret.arrival_t;
 
@@ -1305,7 +1311,7 @@ CPU* schedule(int val, PROCESS* arr){   //val, for further input variation, arr 
 
 					for(j=0;j<CPU_CORES;j++){
 						if(queue.running[j] != NULL && queue.running[j]->rr_ts_used == queue.running[j]->cfs_timeslice){
-							queue.running[j]->rr_ts_used = 0;
+							//rr_ts_used = 0;
 							enque_vruntime(&queue.ready_head, &queue.ready_rear,NULL, queue.running[j], &queue.ready_count);
 							queue.running[j] = NULL;
 						}//ts expired
